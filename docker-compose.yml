@@ -1,0 +1,276 @@
+version: "3.9"
+
+# CONCEPT: Database-per-Service
+# Each microservice owns a dedicated PostgreSQL instance.
+# Services cannot query each other's DB — they must communicate via APIs or events.
+
+services:
+
+  # ─────────────────────────────────────────────
+  # AWS Simulation (LocalStack)
+  # Provides SQS + Kinesis locally without an AWS account
+  # CONCEPT: Local cloud development — same boto3 code runs against LocalStack or real AWS
+  # ─────────────────────────────────────────────
+  localstack:
+    image: localstack/localstack:3.4
+    container_name: orderstream-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=sqs,kinesis
+      - DEBUG=0
+      - PERSISTENCE=0
+    volumes:
+      - ./infrastructure/localstack/init-aws.sh:/etc/localstack/init/ready.d/init-aws.sh:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─────────────────────────────────────────────
+  # Databases (one per service)
+  # ─────────────────────────────────────────────
+  postgres-orders:
+    image: postgres:16-alpine
+    container_name: orderstream-db-orders
+    environment:
+      POSTGRES_USER: orders_user
+      POSTGRES_PASSWORD: orders_pass
+      POSTGRES_DB: orders_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - pg_orders:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orders_user -d orders_db"]
+      interval: 5s
+      retries: 5
+
+  postgres-inventory:
+    image: postgres:16-alpine
+    container_name: orderstream-db-inventory
+    environment:
+      POSTGRES_USER: inventory_user
+      POSTGRES_PASSWORD: inventory_pass
+      POSTGRES_DB: inventory_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - pg_inventory:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inventory_user -d inventory_db"]
+      interval: 5s
+      retries: 5
+
+  postgres-payments:
+    image: postgres:16-alpine
+    container_name: orderstream-db-payments
+    environment:
+      POSTGRES_USER: payments_user
+      POSTGRES_PASSWORD: payments_pass
+      POSTGRES_DB: payments_db
+    ports:
+      - "5435:5432"
+    volumes:
+      - pg_payments:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U payments_user -d payments_db"]
+      interval: 5s
+      retries: 5
+
+  postgres-notifications:
+    image: postgres:16-alpine
+    container_name: orderstream-db-notifications
+    environment:
+      POSTGRES_USER: notifications_user
+      POSTGRES_PASSWORD: notifications_pass
+      POSTGRES_DB: notifications_db
+    ports:
+      - "5436:5432"
+    volumes:
+      - pg_notifications:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U notifications_user -d notifications_db"]
+      interval: 5s
+      retries: 5
+
+  postgres-analytics:
+    image: postgres:16-alpine
+    container_name: orderstream-db-analytics
+    environment:
+      POSTGRES_USER: analytics_user
+      POSTGRES_PASSWORD: analytics_pass
+      POSTGRES_DB: analytics_db
+    ports:
+      - "5437:5432"
+    volumes:
+      - pg_analytics:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics_user -d analytics_db"]
+      interval: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────────
+  # Nginx — Local API Gateway proxy
+  # CONCEPT: API Gateway — single entry point that routes to downstream services
+  # In production this would be AWS API Gateway with JWT Authorizer + rate limiting
+  # ─────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    container_name: orderstream-gateway
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./infrastructure/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - order-service
+      - inventory-service
+      - payment-service
+      - notification-service
+      - analytics-service
+
+  # ─────────────────────────────────────────────
+  # Microservices
+  # ─────────────────────────────────────────────
+  order-service:
+    build:
+      context: ./services/order_service
+      dockerfile: Dockerfile
+    container_name: orderstream-orders
+    ports:
+      - "8001:8001"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://orders_user:orders_pass@postgres-orders:5432/orders_db
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      SQS_ORDER_CREATED_QUEUE_URL: http://localstack:4566/000000000000/order-created-queue
+      KINESIS_STREAM_NAME: ecommerce-events-stream
+      INVENTORY_SERVICE_URL: http://inventory-service:8002
+      SERVICE_NAME: order-service
+    depends_on:
+      postgres-orders:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    volumes:
+      - ./shared:/app/shared:ro
+    restart: on-failure
+
+  inventory-service:
+    build:
+      context: ./services/inventory_service
+      dockerfile: Dockerfile
+    container_name: orderstream-inventory
+    ports:
+      - "8002:8002"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://inventory_user:inventory_pass@postgres-inventory:5432/inventory_db
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      SQS_ORDER_CREATED_QUEUE_URL: http://localstack:4566/000000000000/order-created-queue
+      SQS_PAYMENT_FAILED_QUEUE_URL: http://localstack:4566/000000000000/payment-failed-queue
+      SQS_INVENTORY_RESERVED_QUEUE_URL: http://localstack:4566/000000000000/inventory-reserved-queue
+      SQS_INVENTORY_FAILED_QUEUE_URL: http://localstack:4566/000000000000/inventory-failed-queue
+      KINESIS_STREAM_NAME: ecommerce-events-stream
+      ORDER_SERVICE_URL: http://order-service:8001
+      SERVICE_NAME: inventory-service
+    depends_on:
+      postgres-inventory:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    volumes:
+      - ./shared:/app/shared:ro
+    restart: on-failure
+
+  payment-service:
+    build:
+      context: ./services/payment_service
+      dockerfile: Dockerfile
+    container_name: orderstream-payments
+    ports:
+      - "8003:8003"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://payments_user:payments_pass@postgres-payments:5432/payments_db
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      SQS_INVENTORY_RESERVED_QUEUE_URL: http://localstack:4566/000000000000/inventory-reserved-queue
+      SQS_PAYMENT_PROCESSED_QUEUE_URL: http://localstack:4566/000000000000/payment-processed-queue
+      SQS_PAYMENT_FAILED_QUEUE_URL: http://localstack:4566/000000000000/payment-failed-queue
+      KINESIS_STREAM_NAME: ecommerce-events-stream
+      ORDER_SERVICE_URL: http://order-service:8001
+      PAYMENT_GATEWAY_FAIL_RATE: "0.2"   # 20% failure rate for demo/learning
+      SERVICE_NAME: payment-service
+    depends_on:
+      postgres-payments:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    volumes:
+      - ./shared:/app/shared:ro
+    restart: on-failure
+
+  notification-service:
+    build:
+      context: ./services/notification_service
+      dockerfile: Dockerfile
+    container_name: orderstream-notifications
+    ports:
+      - "8004:8004"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://notifications_user:notifications_pass@postgres-notifications:5432/notifications_db
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      SQS_PAYMENT_PROCESSED_QUEUE_URL: http://localstack:4566/000000000000/payment-processed-queue
+      SQS_PAYMENT_FAILED_QUEUE_URL: http://localstack:4566/000000000000/payment-failed-queue
+      SQS_INVENTORY_FAILED_QUEUE_URL: http://localstack:4566/000000000000/inventory-failed-queue
+      KINESIS_STREAM_NAME: ecommerce-events-stream
+      SERVICE_NAME: notification-service
+    depends_on:
+      postgres-notifications:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    volumes:
+      - ./shared:/app/shared:ro
+    restart: on-failure
+
+  analytics-service:
+    build:
+      context: ./services/analytics_service
+      dockerfile: Dockerfile
+    container_name: orderstream-analytics
+    ports:
+      - "8005:8005"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://analytics_user:analytics_pass@postgres-analytics:5432/analytics_db
+      AWS_ENDPOINT_URL: http://localstack:4566
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      KINESIS_STREAM_NAME: ecommerce-events-stream
+      SERVICE_NAME: analytics-service
+    depends_on:
+      postgres-analytics:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    volumes:
+      - ./shared:/app/shared:ro
+    restart: on-failure
+
+volumes:
+  pg_orders:
+  pg_inventory:
+  pg_payments:
+  pg_notifications:
+  pg_analytics:

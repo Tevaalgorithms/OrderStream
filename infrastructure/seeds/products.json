@@ -1,0 +1,30 @@
+[
+  {
+    "sku": "LAPTOP-PRO-15",
+    "name": "Pro Laptop 15-inch",
+    "description": "High-performance laptop for developers",
+    "unit_price": 1299.99,
+    "stock": 50
+  },
+  {
+    "sku": "MOUSE-WIRELESS-01",
+    "name": "Wireless Ergonomic Mouse",
+    "description": "Comfortable wireless mouse with long battery life",
+    "unit_price": 49.99,
+    "stock": 200
+  },
+  {
+    "sku": "KEYBOARD-MECH-01",
+    "name": "Mechanical Keyboard TKL",
+    "description": "Tenkeyless mechanical keyboard, tactile switches",
+    "unit_price": 129.99,
+    "stock": 100
+  },
+  {
+    "sku": "MONITOR-4K-27",
+    "name": "4K 27-inch Monitor",
+    "description": "Ultra-sharp 4K display for professionals",
+    "unit_price": 699.99,
+    "stock": 30
+  }
+]
