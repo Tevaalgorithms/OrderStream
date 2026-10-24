@@ -1,7 +1,7 @@
 # OrderStream — Python Microservices Platform
 
-> A production-grade e-commerce microservices platform built with Python, PostgreSQL, AWS SQS, and AWS Kinesis.
-> Designed to **teach microservice architecture** through a real-world order processing domain.
+A production-grade e-commerce microservices platform built with Python, PostgreSQL, AWS SQS, and AWS Kinesis.
+
 
 ---
 
